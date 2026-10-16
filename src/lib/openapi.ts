@@ -43,8 +43,8 @@ import {
 
 export type JsonSchema = Record<string, unknown>;
 export type HttpMethod = "get" | "post" | "put" | "patch" | "delete";
-/** `public`: no token. `any`: any authenticated user (ownership rules may still apply). `staff`: staff only. */
-export type Access = "public" | "any" | "staff";
+/** `public`: no token. `any`: any authenticated user (ownership rules may still apply). `staff`: staff only. `cron`: scheduler only (`CRON_SECRET` bearer). */
+export type Access = "public" | "any" | "staff" | "cron";
 
 export interface OpenApiParameter {
   name: string;
@@ -563,6 +563,7 @@ const ACCESS_TEXT: Record<Access, string> = {
   public: "Public (no token required).",
   any: "Any authenticated user (passenger or staff); passengers only reach their own resources.",
   staff: "Staff only.",
+  cron: "Scheduler only: `Authorization: Bearer <CRON_SECRET>` (not a user token).",
 };
 
 const flightIdParam = { id: "Flight id (24-char ObjectId)." };
@@ -572,6 +573,8 @@ const OPERATIONS: OperationDef[] = [
   { method: "get", path: "/api/health", tag: "System", summary: "Health check (pings MongoDB)", access: "public", ok: { "200": { description: "Service and database are up.", schema: obj({ status: enumOf("ok"), db: enumOf("up") }) } }, errors: [503] },
   { method: "get", path: "/api/docs", tag: "System", summary: "This OpenAPI 3.0 document (JSON)", access: "public", ok: { "200": { description: "The OpenAPI document.", schema: { type: "object" } } } },
   { method: "get", path: "/api/docs/ui", tag: "System", summary: "Swagger UI (HTML) for this API", access: "public", ok: { "200": { description: "An HTML page that loads Swagger UI from a CDN.", html: true } } },
+
+  { method: "get", path: "/api/cron/sweep", tag: "System", summary: "Scheduled sweep (cron)", description: "Called daily by Vercel Cron. Releases expired seat holds, expires lapsed PNRs and re-runs the revenue rules for non-cancelled flights departing in the next 14 days. Always 401 when `CRON_SECRET` is not configured.", access: "cron", ok: { "200": { description: "Sweep summary.", schema: obj({ ok: bool(), expiredHolds: int(), seatsReleased: int(), pnrsExpired: int(), flightsRepriced: int(), repriceErrors: int({ description: "Flights whose reprice failed (logged, sweep continues)." }), ranAt: dateTime() }) } } },
 
   // ---- auth
   { method: "post", path: "/api/auth/register", tag: "Auth", summary: "Register a passenger account", description: "Self-registration always creates a `passenger`.", access: "public", body: registerSchema, ok: { "201": { description: "Created.", schema: obj({ user: ref("User") }) } }, errors: [409] },
@@ -651,6 +654,7 @@ const OPERATIONS: OperationDef[] = [
 // ---- assembly -------------------------------------------------------------
 
 const BEARER_OR_COOKIE: Record<string, string[]>[] = [{ bearerAuth: [] }, { cookieAuth: [] }];
+const CRON_SECURITY: Record<string, string[]>[] = [{ cronSecret: [] }];
 
 function buildOperation(def: OperationDef): OpenApiOperation {
   const parameters: OpenApiParameter[] = [
@@ -680,7 +684,7 @@ function buildOperation(def: OperationDef): OpenApiOperation {
   if (hasInput) statuses["400"] = { $ref: "#/components/responses/BadRequest" };
   if (def.access !== "public" || def.errors?.includes(401)) statuses["401"] = { $ref: "#/components/responses/Unauthorized" };
   if (def.errors?.includes(402)) statuses["402"] = { $ref: "#/components/responses/PaymentRequired" };
-  if (def.access !== "public") statuses["403"] = { $ref: "#/components/responses/Forbidden" };
+  if (def.access !== "public" && def.access !== "cron") statuses["403"] = { $ref: "#/components/responses/Forbidden" };
   if (def.pathParams) statuses["404"] = { $ref: "#/components/responses/NotFound" };
   if (def.errors?.includes(409)) statuses["409"] = { $ref: "#/components/responses/Conflict" };
   if (def.errors?.includes(503)) {
@@ -690,7 +694,8 @@ function buildOperation(def: OperationDef): OpenApiOperation {
     };
   }
 
-  const roles = def.access === "public" ? [] : def.access === "staff" ? ["staff"] : ["passenger", "staff"];
+  const roles =
+    def.access === "public" ? [] : def.access === "cron" ? ["cron"] : def.access === "staff" ? ["staff"] : ["passenger", "staff"];
   const operation: OpenApiOperation = {
     tags: [def.tag],
     summary: def.summary,
@@ -706,7 +711,7 @@ function buildOperation(def: OperationDef): OpenApiOperation {
         }
       : {}),
     responses: statuses,
-    security: def.access === "public" ? [] : BEARER_OR_COOKIE,
+    security: def.access === "public" ? [] : def.access === "cron" ? CRON_SECURITY : BEARER_OR_COOKIE,
     "x-roles": roles,
   };
   return operation;
@@ -736,7 +741,7 @@ export function buildOpenApiSpec(): OpenApiDocument {
     },
     servers: [{ url: "/", description: "This server" }],
     tags: [
-      { name: "System", description: "Health and documentation." },
+      { name: "System", description: "Health, documentation and scheduled jobs." },
       { name: "Auth", description: "Registration, login and accounts." },
       { name: "Reservations - Aircraft", description: "Aircraft types and cabin layouts (staff)." },
       { name: "Reservations - Flights", description: "Flight schedules and search." },
@@ -754,6 +759,7 @@ export function buildOpenApiSpec(): OpenApiDocument {
       securitySchemes: {
         bearerAuth: { type: "http", scheme: "bearer", bearerFormat: "JWT", description: "Token from POST /api/auth/login." },
         cookieAuth: { type: "apiKey", in: "cookie", name: "pss_token", description: "httpOnly cookie set by POST /api/auth/login." },
+        cronSecret: { type: "http", scheme: "bearer", description: "The `CRON_SECRET` environment variable, sent as `Authorization: Bearer <CRON_SECRET>` (Vercel Cron does this automatically). Not a user JWT." },
       },
       schemas,
       responses,

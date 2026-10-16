@@ -36,7 +36,7 @@ export async function connectDB(uri?: string): Promise<typeof mongoose> {
   if (!cache.promise) {
     cache.uri = target;
     cache.promise = mongoose
-      .connect(target, { bufferCommands: false, serverSelectionTimeoutMS: 5000 })
+      .connect(target, { bufferCommands: false, serverSelectionTimeoutMS: 5000, maxPoolSize: 5 })
       .catch((err) => {
         cache.promise = null; // allow retry on the next call
         cache.uri = null;

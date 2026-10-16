@@ -14,6 +14,11 @@ Under **Database Access**, add a database user with a username and password
 Under **Network Access**, add your current IP address.
 For development only you may use `0.0.0.0/0` (allow from anywhere). Do not do this for production.
 
+**Deployment (Vercel):** Vercel functions run on dynamic IPs that cannot be allowlisted individually, so a Vercel
+deployment needs `0.0.0.0/0` in Network Access. Compensate with a strong, unique database user password (rotate it if
+it was ever shared) and keep the URI only in Vercel's environment variables and `.env.local`. See the README section
+"Deploying to Vercel".
+
 ## 4. Copy the connection string
 Click **Connect**, then **Drivers**, and copy the `mongodb+srv://...` URI. Replace `<password>` with your
 database user's password and add the database name before the `?`:

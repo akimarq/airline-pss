@@ -133,6 +133,41 @@ The script prints a summary and the credentials. It only prints the target host 
 > The seed writes to the database in `.env.local`. Run it yourself against Atlas when you are ready; the tests
 > exercise the same code on an in-memory MongoDB.
 
+## Deploying to Vercel
+
+The app deploys to Vercel as a normal Next.js project; the database stays on MongoDB Atlas.
+
+1. **Atlas network access.** Vercel functions have no fixed IP, so under Atlas **Network Access** add `0.0.0.0/0`
+   (allow from anywhere). The database user's password is then the real protection: use a strong one and never
+   commit it (see [`docs/ATLAS_SETUP.md`](docs/ATLAS_SETUP.md)).
+2. **Import the repo.** In Vercel choose **Add New Project**, import the GitHub repository, keep the auto-detected
+   **Next.js** preset and the default build and install commands. Pick a function region close to your Atlas region.
+3. **Environment variables** (Project Settings, Environment Variables; mark the secrets as Sensitive):
+
+   | Variable | Value |
+   | --- | --- |
+   | `MONGODB_URI` | Atlas SRV string including the database name, e.g. `mongodb+srv://<user>:<password>@<cluster>.mongodb.net/pss?retryWrites=true&w=majority` |
+   | `JWT_SECRET` | New long random string, different from local. |
+   | `JWT_EXPIRES_IN` | `7d` |
+   | `AIRLINE_CODE` | `PS` |
+   | `AIRLINE_TICKET_PREFIX` | `123` |
+   | `CRON_SECRET` | Another long random string. Vercel Cron sends it as `Authorization: Bearer <CRON_SECRET>`. |
+
+4. **Seed once, from your own machine.** Point `.env.local` at the Atlas database and run `npm run seed`
+   (check the "Target database" line it prints first). It is idempotent; do not run it from Vercel.
+5. **Change the demo staff password after seeding.** The repository is public, so `staff@airline.test` / `Staff123!`
+   is publicly known. Change it (or create your own staff account with `POST /api/auth/staff` and remove the demo one)
+   before sharing the URL.
+6. **Check it.** `GET /api/health` should return `{"status":"ok","db":"up"}`.
+
+### Scheduled sweep (cron)
+
+`vercel.json` registers a daily cron (`0 3 * * *`, 03:00 UTC) that calls `GET /api/cron/sweep`. It releases expired
+seat holds, expires lapsed PNRs and re-runs the revenue rules for non-cancelled flights departing in the next 14 days,
+and answers `{ ok, expiredHolds, seatsReleased, pnrsExpired, flightsRepriced, repriceErrors, ranAt }`. The endpoint
+requires `Authorization: Bearer <CRON_SECRET>` and always returns `401` when `CRON_SECRET` is not set. The **Hobby**
+plan only allows crons that run once per day, so this sweep is a backstop; lazy expiry on reads still does the
+real-time work. Pro plans allow a more frequent schedule (edit `vercel.json`).
 ## Folder structure
 
 ```
@@ -173,6 +208,7 @@ Roles: **P** = passenger (own resources only), **S** = staff, **Public** = no to
 | --- | --- | --- |
 | `GET /api/health` | Public | Ping MongoDB. |
 | `GET /api/docs`, `GET /api/docs/ui` | Public | OpenAPI JSON, Swagger UI. |
+| `GET /api/cron/sweep` | Cron secret | Scheduled sweep (`Authorization: Bearer <CRON_SECRET>`), see [Deploying to Vercel](#deploying-to-vercel). |
 | `POST /api/auth/register` | Public | Create a passenger account. |
 | `POST /api/auth/login` | Public | Get a JWT (and cookie). |
 | `POST /api/auth/logout` | Public | Clear the cookie. |
@@ -357,6 +393,6 @@ Api Post "/api/flights/$($flight.id)/boarding/scan" $staff @{ barcode = $ci.boar
 - Cancelling a PNR does not delete its check-ins (the gate refuses them instead), so load control and the manifest
   can still count a checked-in passenger whose ticket was voided until boarding closes.
 - Load-sheet totals are recomputed live; a FINAL sheet is flagged `outOfDate` when later check-ins or bags change them.
-- Seat holds expire lazily (no scheduler); a hold that nobody touches stays in the database until the next read or sale.
+- Seat holds expire lazily on reads and sales; the only scheduler is the optional daily Vercel cron sweep, so a hold nobody touches can stay in the database until the next read, sale or sweep.
 - The UI is deliberately minimal. Swagger UI loads its scripts from a CDN (unpkg), so `/api/docs/ui` needs internet access.
 - Data lives in MongoDB only; there is no file storage, email or notification service.

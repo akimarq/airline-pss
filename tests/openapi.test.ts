@@ -45,6 +45,10 @@ describe("OpenAPI spec", () => {
         expect(Object.keys(op.responses).some((s) => s.startsWith("2")), label).toBe(true);
         if (op["x-roles"].length === 0) {
           expect(op.security, label).toEqual([]);
+        } else if (op["x-roles"].includes("cron")) {
+          // scheduler endpoint: guarded by the CRON_SECRET bearer, not a user token (no role check, so no 403)
+          expect(op.security, label).toEqual([{ cronSecret: [] }]);
+          expect(op.responses["401"], label).toBeDefined();
         } else {
           expect(op.security, label).toEqual([{ bearerAuth: [] }, { cookieAuth: [] }]);
           expect(op.responses["401"], label).toBeDefined();
